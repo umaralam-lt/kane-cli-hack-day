@@ -66,7 +66,7 @@ before(async () => {
   url.searchParams.set("options", `-c search_path=${schema},public`);
   process.env.DATABASE_URL = url.toString();
   process.env.SESSION_SECRET ||= "qa-session-secret-not-for-production";
-  process.env.PUBLIC_EVIDENCE_BASE_URL ||= "https://evidence.example.test";
+  process.env.EVIDENCE_CDN_BASE_URL ||= "https://evidence.example.test";
   const [db, page, session, headers] = await Promise.all([
     import("../../src/lib/db.ts"),
     import("../../src/server/team-page.ts"),
