@@ -30,9 +30,9 @@ import {
 // Public evidence uploads to S3 (docs/api/PUBLIC_EVIDENCE.md): request a presigned PUT, check the bytes, publish, remove.
 
 const RATE = { limit: 60, windowSec: 60 };
-const REQUIRED_ENV = ["PUBLIC_EVIDENCE_BUCKET", "PUBLIC_EVIDENCE_REGION", "PUBLIC_EVIDENCE_BASE_URL", "PUBLIC_EVIDENCE_ACCESS_KEY_ID", "PUBLIC_EVIDENCE_SECRET_ACCESS_KEY"] as const;
-const ENDPOINT_ENV = "PUBLIC_EVIDENCE_ENDPOINT";
-const DISTRIBUTION_ENV = "PUBLIC_EVIDENCE_DISTRIBUTION_ID";
+const REQUIRED_ENV = ["EVIDENCE_S3_BUCKET", "EVIDENCE_S3_REGION", "EVIDENCE_CDN_BASE_URL", "EVIDENCE_S3_ACCESS_KEY_ID", "EVIDENCE_S3_SECRET_ACCESS_KEY"] as const;
+const ENDPOINT_ENV = "EVIDENCE_S3_ENDPOINT";
+const DISTRIBUTION_ENV = "EVIDENCE_CDN_DISTRIBUTION_ID";
 const CLOUDFRONT_REGION = "us-east-1";
 const MAX_REASON = 500;
 const LIST_LIMIT = 500;
@@ -354,7 +354,7 @@ async function discard(s3: S3, key: string) {
   await s3.client.send(new DeleteObjectCommand({ Bucket: s3.bucket, Key: key })).catch((err) => log.warn("public_evidence.discard_failed", { key, err }));
 }
 
-/** Ask CloudFront to drop cached copies, when PUBLIC_EVIDENCE_DISTRIBUTION_ID is set. */
+/** Ask CloudFront to drop cached copies, when EVIDENCE_CDN_DISTRIBUTION_ID is set. */
 async function invalidateEdge(s3: S3, objectKey: string): Promise<PublicEvidenceRemoval["cache_invalidation"]> {
   const distribution = process.env[DISTRIBUTION_ENV]?.trim();
   if (!distribution) return "not_configured";
@@ -425,7 +425,7 @@ function refId(ref: string) {
   return id;
 }
 
-/** The public URL, or null when PUBLIC_EVIDENCE_BASE_URL is unset. */
+/** The public URL, or null when EVIDENCE_CDN_BASE_URL is unset. */
 function urlOf(objectKey: string) {
   try {
     return publicEvidenceUrl(objectKey);
@@ -505,7 +505,7 @@ function isMissing(err: unknown) {
 
 let cachedS3: { key: string; s3: S3 } | null = null;
 
-/** The S3 client from PUBLIC_EVIDENCE_* env, or DOWNSTREAM_DEGRADED when it isn't configured. */
+/** The S3 client from the EVIDENCE_S3_* and EVIDENCE_CDN_* env, or DOWNSTREAM_DEGRADED when it isn't configured. */
 function requireS3(): S3 {
   const missing = REQUIRED_ENV.filter((name) => !process.env[name]?.trim());
   if (missing.length) {

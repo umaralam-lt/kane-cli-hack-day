@@ -189,7 +189,7 @@ The server reads the uploaded object with its stored checksum, downloads it and 
 - Object keys:
   - upload: `incoming/p{project_id}/{sha256}.{ext}` (never readable publicly)
   - public: `public/p{project_id}/{sha256}.{ext}`
-- `public_url` = `PUBLIC_EVIDENCE_BASE_URL + "/" + object_key`, for example `https://dXXXX.cloudfront.net/public/p7/9f2c….png`. The bytes behind a URL never change, so it is served with `Cache-Control: public, max-age=31536000, immutable` and `Content-Disposition: inline; filename="…"`.
+- `public_url` = `EVIDENCE_CDN_BASE_URL + "/" + object_key`, for example `https://dXXXX.cloudfront.net/public/p7/9f2c….png`. The bytes behind a URL never change, so it is served with `Cache-Control: public, max-age=31536000, immutable` and `Content-Disposition: inline; filename="…"`.
 - `nosniff`, the sandboxing CSP and GET CORS headers come from the CloudFront response-headers policy.
 
 ## Dedupe and status
@@ -280,13 +280,13 @@ Environment (namespaced, because Vercel reserves `AWS_*`):
 
 | variable | required | example |
 |---|---|---|
-| `PUBLIC_EVIDENCE_BUCKET` | yes | `kane-cli-hack-day` |
-| `PUBLIC_EVIDENCE_REGION` | yes | `us-east-1` |
-| `PUBLIC_EVIDENCE_BASE_URL` | yes | `https://dXXXX.cloudfront.net` (no path, no trailing slash) |
-| `PUBLIC_EVIDENCE_ACCESS_KEY_ID` | yes | the app IAM user's key |
-| `PUBLIC_EVIDENCE_SECRET_ACCESS_KEY` | yes | |
-| `PUBLIC_EVIDENCE_ENDPOINT` | no | an S3-compatible test server, for example MinIO at `http://127.0.0.1:9102` (path-style) |
-| `PUBLIC_EVIDENCE_DISTRIBUTION_ID` | no | the CloudFront distribution id. When set, removal invalidates the object's path. |
+| `EVIDENCE_S3_BUCKET` | yes | `kane-cli-hack-day` |
+| `EVIDENCE_S3_REGION` | yes | `us-east-1` |
+| `EVIDENCE_CDN_BASE_URL` | yes | `https://dXXXX.cloudfront.net` (no path, no trailing slash) |
+| `EVIDENCE_S3_ACCESS_KEY_ID` | yes | the app IAM user's key |
+| `EVIDENCE_S3_SECRET_ACCESS_KEY` | yes | |
+| `EVIDENCE_S3_ENDPOINT` | no | an S3-compatible test server, for example MinIO at `http://127.0.0.1:9102` (path-style) |
+| `EVIDENCE_CDN_DISTRIBUTION_ID` | no | the CloudFront distribution id. When set, removal invalidates the object's path. |
 
 If any required variable is missing, uploads answer `DOWNSTREAM_DEGRADED` ("public evidence isn't configured"). The `public_evidence` flag (ops settings) switches uploads off without a deploy. Reading and removal keep working.
 
@@ -305,7 +305,7 @@ The app keys need only:
 - `s3:PutObject` on `incoming/*` and `public/*` (presigned uploads and the publishing copy)
 - `s3:GetObject` and `s3:DeleteObject` on `incoming/*` and `public/*`
 - `s3:ListBucket` on the bucket, limited to the prefixes `incoming/` and `public/`, so a missing key is 404 rather than 403. The server treats a 403 on a missing upload as "not uploaded yet" too.
-- Optional: `cloudfront:CreateInvalidation` on the distribution, together with `PUBLIC_EVIDENCE_DISTRIBUTION_ID`, so removal also clears CloudFront's cache.
+- Optional: `cloudfront:CreateInvalidation` on the distribution, together with `EVIDENCE_CDN_DISTRIBUTION_ID`, so removal also clears CloudFront's cache.
 
 ## Coverage of the pending contract
 
