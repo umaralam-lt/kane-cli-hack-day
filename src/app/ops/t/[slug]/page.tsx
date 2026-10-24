@@ -7,6 +7,7 @@ import { PROGRESS_ITEMS, shippedMinimum } from "@/lib/progress";
 import { getEventPhotos, getMemberProfiles, getTeamPhotoInfo, photoSrc } from "@/lib/photos";
 import { isAdmin } from "@/lib/session";
 import { getActivity, getMembers, getProgress, getTeamBySlug } from "@/lib/teams";
+import { teamSyncMessage, teamSyncStatus } from "@/server/testmu";
 import { AdminLogin } from "../../parts";
 
 export const metadata: Metadata = { title: "Admin · Team", robots: { index: false } };
@@ -35,13 +36,14 @@ async function Detail({ params }: Pick<PageProps<"/ops/t/[slug]">, "params">) {
   const team = await getTeamBySlug(slug);
   if (!team) notFound();
 
-  const [members, progress, activity, photoInfo, profiles, gallery] = await Promise.all([
+  const [members, progress, activity, photoInfo, profiles, gallery, testmuSync] = await Promise.all([
     getMembers(team.id),
     getProgress(team.id),
     getActivity(team.id, 200),
     getTeamPhotoInfo(team.id),
     getMemberProfiles(team.id),
     getEventPhotos(team.id),
+    teamSyncStatus(team.id),
   ]);
   const profileOf = new Map(profiles.map((p) => [p.id, p]));
   const teamPhoto = photoSrc(photoInfo.photo_url);
@@ -226,6 +228,23 @@ async function Detail({ params }: Pick<PageProps<"/ops/t/[slug]">, "params">) {
           ))}
         </ol>
       </div>
+
+      {testmuSync.length > 0 && (
+        <div>
+          <p className={label}>TestMu AI team sync · {testmuSync.filter((s) => s.done).length}/{testmuSync.length} in the captain’s team</p>
+          <ul className="border-t border-dashed border-hairline">
+            {testmuSync.map((s) => (
+              <li key={s.member_id} className="flex flex-wrap justify-between gap-x-4 gap-y-1 border-b border-dashed border-hairline py-2.5 font-plex text-xs">
+                <span>
+                  <span className="text-bright">{s.name}</span> <span className={s.done ? "text-lime" : "text-warning"}>· {s.code ?? "not synced"}</span>
+                  <span className="block text-lightgray">{teamSyncMessage(s.code, s.name)}</span>
+                </span>
+                {s.attempted_at && <span className="text-lightgray">{when.format(s.attempted_at)}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }

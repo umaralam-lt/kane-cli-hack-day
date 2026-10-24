@@ -18,10 +18,12 @@ import {
   leaveTeamAction,
   overrideAction,
   removeMemberAction,
+  retryTestmuSyncAction,
   revokeInviteAction,
   transferCaptainAction,
   updateSettingsAction,
   type InviteFormState,
+  type SyncFormState,
   type TeamFormState,
 } from "./actions";
 import { ActionNote, dangerBtn, smallBtn } from "./ui";
@@ -261,7 +263,7 @@ export function AdvanceStateButton({ slug, to, label }: { slug: string; to: "for
  * "Next: activate" for the captain of an unlocked team: confirm this is the final
  * team first. Confirming locks the roster for everyone and goes to /activate.
  */
-export function FinalTeamConfirm({ slug, teamName, members, cap }: { slug: string; teamName: string; members: string[]; cap: number }) {
+export function FinalTeamConfirm({ slug, teamName, members, cap, testmuSync }: { slug: string; teamName: string; members: string[]; cap: number; testmuSync: boolean }) {
   const [open, setOpen] = useState(false);
   const [state, action] = useActionState<TeamFormState, FormData>(confirmFinalTeamAction.bind(null, slug), null);
   if (!open) {
@@ -294,6 +296,7 @@ export function FinalTeamConfirm({ slug, teamName, members, cap }: { slug: strin
         <input type="checkbox" name="confirm" required className="mt-1 h-5 w-5 accent-[var(--lime)]" />
         <span>Yes, this is our final team. Lock it.</span>
       </label>
+      {testmuSync && <TestmuPasswordField id="final-testmu-pw" />}
       <ActionNote state={state} />
       <div className="flex flex-wrap items-center gap-3">
         <PendingButton className="inline-flex min-h-11 items-center bg-lime px-5 font-plex text-sm text-ink hover:bg-bright disabled:opacity-60">Lock the team and continue →</PendingButton>
@@ -417,5 +420,31 @@ export function OverrideForm({ slug, members }: { slug: string; members: { id: n
         Apply override
       </SubmitButton>
     </form>
+  );
+}
+
+/** Captain: add the teammates not in the TestMu AI team yet. Members already added or invited are skipped. */
+export function TestmuSyncRetryForm({ slug }: { slug: string }) {
+  const [state, action] = useActionState<SyncFormState, FormData>(retryTestmuSyncAction.bind(null, slug), null);
+  return (
+    <form action={action} className="space-y-3" data-testmu-sync-retry>
+      <TestmuPasswordField id="sync-testmu-pw" />
+      <ActionNote state={state} ok={state?.ok && state.data.stopped ? "Tried again. Some teammates still need attention, see above." : "Tried again. See the statuses above."} />
+      <SubmitButton pending="Adding teammates…" className="min-h-11">
+        Retry the ones that failed
+      </SubmitButton>
+    </form>
+  );
+}
+
+function TestmuPasswordField({ id }: { id: string }) {
+  return (
+    <div>
+      <Label htmlFor={id} hint="Used once · never stored">
+        Your TestMu AI password
+      </Label>
+      <input id={id} name="testmu_password" type="password" required minLength={8} maxLength={255} autoComplete="current-password" className={inputCls} />
+      <p className="mt-2 font-plex text-xs text-lightgray">We use it once to move your teammates into your TestMu AI team. It’s never stored.</p>
+    </div>
   );
 }

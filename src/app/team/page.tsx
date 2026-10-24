@@ -13,11 +13,13 @@ import { avatarSrc } from "@/server/avatar";
 import { flowState, listPool } from "@/server/flow";
 import { currentTeamOf, getRoster, getTeamInfo, listOpenInvites, previewInvite } from "@/server/teams";
 import { listIntros } from "@/server/match";
+import { teamSyncEnabled } from "@/lib/testmu-provision";
+import { teamSyncMessage, teamSyncStatus } from "@/server/testmu";
 import { joinPoolAction } from "../match/actions";
 import { IntroButtons } from "../match/parts";
 import { Panel, StateLine } from "./blocks";
 import PublicPool from "./PublicPool";
-import { CreateTeamForm, FinalTeamConfirm, InviteForm, WaitingForCaptain, JoinByCodeForm, LeaveTeamForm, RevokeInviteButton, SettingsForm } from "./parts";
+import { CreateTeamForm, FinalTeamConfirm, InviteForm, WaitingForCaptain, JoinByCodeForm, LeaveTeamForm, RevokeInviteButton, SettingsForm, TestmuSyncRetryForm } from "./parts";
 
 export const metadata: Metadata = { title: "Your team" };
 
@@ -224,12 +226,13 @@ async function Personal({ searchParams }: Pick<PageProps<"/team">, "searchParams
                   Next: activate →
                 </Button>
               ) : captain ? (
-                <FinalTeamConfirm slug={team.slug} teamName={team.name} members={roster.map((r) => r.name)} cap={team.cap} />
+                <FinalTeamConfirm slug={team.slug} teamName={team.name} members={roster.map((r) => r.name)} cap={team.cap} testmuSync={teamSyncEnabled() && roster.length > 1} />
               ) : (
                 <WaitingForCaptain captainName={roster.find((r) => r.role === "captain")?.name ?? null} />
               )}
             </div>
           </div>
+          {team.locked && teamSyncEnabled() && <TestmuSync teamId={team.id} slug={team.slug} captain={captain} />}
 
 
         </div>
@@ -292,6 +295,35 @@ function SignedOut({ code }: { code: string }) {
           </Button>
         </div>
       </div>
+    </section>
+  );
+}
+
+/** The locked team's TestMu AI sync: each teammate's status, and the captain's retry for the ones that failed. */
+async function TestmuSync({ teamId, slug, captain }: { teamId: number; slug: string; captain: boolean }) {
+  const statuses = await teamSyncStatus(teamId);
+  if (!statuses.length) return null;
+  const left = statuses.filter((s) => !s.done).length;
+  return (
+    <section id="testmu-sync" className="border border-hairline p-5" aria-labelledby="testmu-sync-title" data-testmu-sync={left ? "pending" : "done"}>
+      <p className="font-pixel text-[10px] uppercase tracking-[0.2em] text-lightgray">TestMu AI team</p>
+      <h2 id="testmu-sync-title" className="mt-2 font-display text-2xl text-bright">
+        {left ? `${left} ${left === 1 ? "teammate isn’t" : "teammates aren’t"} in your TestMu AI team yet` : "Everyone is in your TestMu AI team"}
+      </h2>
+      <ul className="mt-4 border-t border-dashed border-hairline">
+        {statuses.map((s) => (
+          <li key={s.member_id} className="border-b border-dashed border-hairline py-2.5 font-plex text-sm" data-member-sync={s.code ?? "pending"}>
+            <span className={s.done ? "text-lime" : "text-warning"}>{s.done ? "■" : "□"}</span> <span className="text-bright">{s.name}</span>
+            <span className="block text-xs text-lightgray">{teamSyncMessage(s.code, s.name)}</span>
+          </li>
+        ))}
+      </ul>
+      {left > 0 && captain && (
+        <div className="mt-5">
+          <TestmuSyncRetryForm slug={slug} />
+        </div>
+      )}
+      {left > 0 && !captain && <p className="mt-4 font-plex text-xs text-lightgray">Your captain can retry this from their Team page.</p>}
     </section>
   );
 }

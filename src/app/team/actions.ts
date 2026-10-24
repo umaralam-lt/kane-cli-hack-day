@@ -2,8 +2,10 @@
 
 import { refresh } from "next/cache";
 import { redirect } from "next/navigation";
+import { teamSyncEnabled } from "@/lib/testmu-provision";
 import { memberActor, requirePersonalMember, requireRole } from "@/server/auth";
 import { AppError, formObject, runAction, type ActionResult } from "@/server/core";
+import { syncTestmuTeam, teamSyncStatus, type TeamSyncResult } from "@/server/testmu";
 import {
   advanceTeamState,
   createInvite,
@@ -78,10 +80,20 @@ export async function updateSettingsAction(slug: string, _prev: TeamFormState, f
   });
 }
 
-/** "This is our final team": lock the roster, then on to activation. */
-export async function confirmFinalTeamAction(slug: string): Promise<TeamFormState> {
-  const r = await runAction(async () => ({ data: null, receipt: await confirmFinalTeam(await actingMember(), await teamId(slug)) }));
+/** "This is our final team": lock the roster, sync it to TestMu AI once, then on to activation. */
+export async function confirmFinalTeamAction(slug: string, _prev: TeamFormState, form: FormData): Promise<TeamFormState> {
+  const r = await runAction(async () => {
+    const who = await actingMember();
+    const id = await teamId(slug);
+    return { who, id, receipt: await confirmFinalTeam(who, id) };
+  });
   if (!r.ok) return r;
+  // Our lock is committed. The TestMu AI sync runs after it and never undoes it.
+  if (teamSyncEnabled()) {
+    const sync = await runAction(() => syncTestmuTeam(r.data.who, r.data.id, String(form.get("testmu_password") ?? "")));
+    const left = (await teamSyncStatus(r.data.id)).some((s) => !s.done);
+    if (!sync.ok || left) redirect("/team?testmu_sync=1#testmu-sync");
+  }
   redirect("/activate");
 }
 
@@ -124,5 +136,16 @@ export async function overrideAction(slug: string, _prev: TeamFormState, form: F
     const receipt = await organizerOverride(staff, await teamId(slug), formObject(form));
     refresh();
     return { data: null, receipt };
+  });
+}
+
+export type SyncFormState = ActionResult<TeamSyncResult> | null;
+
+/** Captain retries the TestMu AI team sync for teammates not in it yet. The password is used once, never kept. */
+export async function retryTestmuSyncAction(slug: string, _prev: SyncFormState, form: FormData): Promise<SyncFormState> {
+  return runAction(async () => {
+    const out = await syncTestmuTeam(await actingMember(), await teamId(slug), String(form.get("testmu_password") ?? ""));
+    refresh();
+    return out;
   });
 }
