@@ -54,28 +54,28 @@ The CloudFront response headers policy allows previews as `https://*.vercel.app`
 Set these in both **Production** and **Preview**. The script prints the values at the end:
 
 ```
-PUBLIC_EVIDENCE_BUCKET=kane-cli-hack-day
-PUBLIC_EVIDENCE_REGION=us-east-1
-PUBLIC_EVIDENCE_BASE_URL=https://<distribution>.cloudfront.net
-PUBLIC_EVIDENCE_DISTRIBUTION_ID=<distribution id>
-PUBLIC_EVIDENCE_ACCESS_KEY_ID=<from the key file>
-PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=<from the key file>
+EVIDENCE_S3_BUCKET=kane-cli-hack-day
+EVIDENCE_S3_REGION=us-east-1
+EVIDENCE_CDN_BASE_URL=https://<distribution>.cloudfront.net
+EVIDENCE_CDN_DISTRIBUTION_ID=<distribution id>
+EVIDENCE_S3_ACCESS_KEY_ID=<from the key file>
+EVIDENCE_S3_SECRET_ACCESS_KEY=<from the key file>
 ```
 
-For example, run `vercel env add PUBLIC_EVIDENCE_SECRET_ACCESS_KEY production`, then run it again with `preview`, and paste the value from `.env.public-evidence`. If `PUBLIC_EVIDENCE_DISTRIBUTION_ID` is unset, the app skips cache invalidation and reports it as `not_configured`. Redeploy, then delete the key file.
+For example, run `vercel env add EVIDENCE_S3_SECRET_ACCESS_KEY production`, then run it again with `preview`, and paste the value from `.env.public-evidence`. If `EVIDENCE_CDN_DISTRIBUTION_ID` is unset, the app skips cache invalidation and reports it as `not_configured`. Redeploy, then delete the key file.
 
 ## App-user checks
 
 These need the app user's own key, so the script doesn't run them. Set the values the script printed. The subshell keeps the key out of your shell:
 
 ```sh
-KEY_FILE=.env.public-evidence BUCKET=kane-cli-hack-day REGION=us-east-1 DIST_ID=<PUBLIC_EVIDENCE_DISTRIBUTION_ID>
+KEY_FILE=.env.public-evidence BUCKET=kane-cli-hack-day REGION=us-east-1 DIST_ID=<EVIDENCE_CDN_DISTRIBUTION_ID>
 printf 'app user check\n' > right.txt
 printf 'tampered\n' > wrong.txt
 SUM=$(openssl dgst -sha256 -binary right.txt | base64)
 (
-  export AWS_ACCESS_KEY_ID="$(sed -n 's/^PUBLIC_EVIDENCE_ACCESS_KEY_ID=//p' "$KEY_FILE")"
-  export AWS_SECRET_ACCESS_KEY="$(sed -n 's/^PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=//p' "$KEY_FILE")"
+  export AWS_ACCESS_KEY_ID="$(sed -n 's/^EVIDENCE_S3_ACCESS_KEY_ID=//p' "$KEY_FILE")"
+  export AWS_SECRET_ACCESS_KEY="$(sed -n 's/^EVIDENCE_S3_SECRET_ACCESS_KEY=//p' "$KEY_FILE")"
   unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN
   aws sts get-caller-identity --query Arn --output text
 
@@ -125,7 +125,7 @@ IAM allows two keys per user, so rotation needs no downtime:
 ```sh
 U=kane-cli-hack-day-public-evidence
 (umask 077; aws --profile <admin-profile> iam create-access-key --user-name "$U" --output text \
-  --query "[join('', ['PUBLIC_EVIDENCE_ACCESS_KEY_ID=', AccessKey.AccessKeyId]), join('', ['PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=', AccessKey.SecretAccessKey])]" \
+  --query "[join('', ['EVIDENCE_S3_ACCESS_KEY_ID=', AccessKey.AccessKeyId]), join('', ['EVIDENCE_S3_SECRET_ACCESS_KEY=', AccessKey.SecretAccessKey])]" \
   | tr '\t' '\n' > .env.public-evidence-new)
 # Update both key variables in Vercel (Production and Preview) and redeploy. Then retire the old key:
 aws --profile <admin-profile> iam update-access-key --user-name "$U" --access-key-id <old-key-id> --status Inactive

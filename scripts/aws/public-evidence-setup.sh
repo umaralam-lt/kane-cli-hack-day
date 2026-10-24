@@ -300,7 +300,7 @@ ensure_access_key() {
     return
   fi
   write_access_key
-  ACCESS_KEY_ID=$(sed -n 's/^PUBLIC_EVIDENCE_ACCESS_KEY_ID=//p' "$KEY_OUT")
+  ACCESS_KEY_ID=$(sed -n 's/^EVIDENCE_S3_ACCESS_KEY_ID=//p' "$KEY_OUT")
   KEY_CREATED=1
   info "created $ACCESS_KEY_ID, secret saved in $KEY_OUT"
 }
@@ -497,12 +497,12 @@ print_env() {
     secret="not retrievable: set when $ACCESS_KEY_ID was created (rotate it to get a new one, see README)"
   fi
   printf '%s\n' \
-    "PUBLIC_EVIDENCE_BUCKET=$BUCKET" \
-    "PUBLIC_EVIDENCE_REGION=$REGION" \
-    "PUBLIC_EVIDENCE_BASE_URL=https://$DIST_DOMAIN" \
-    "PUBLIC_EVIDENCE_DISTRIBUTION_ID=$DIST_ID" \
-    "PUBLIC_EVIDENCE_ACCESS_KEY_ID=${ACCESS_KEY_ID:-<none active>}" \
-    "PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=($secret)"
+    "EVIDENCE_S3_BUCKET=$BUCKET" \
+    "EVIDENCE_S3_REGION=$REGION" \
+    "EVIDENCE_CDN_BASE_URL=https://$DIST_DOMAIN" \
+    "EVIDENCE_CDN_DISTRIBUTION_ID=$DIST_ID" \
+    "EVIDENCE_S3_ACCESS_KEY_ID=${ACCESS_KEY_ID:-<none active>}" \
+    "EVIDENCE_S3_SECRET_ACCESS_KEY=($secret)"
 }
 
 verify() {
@@ -961,7 +961,7 @@ run_write() {
 write_access_key() {
   (umask 077 && set -o noclobber && : >"$KEY_OUT") 2>/dev/null || die "cannot create $KEY_OUT: it exists or its directory is read-only"
   if ! "${AWS[@]}" iam create-access-key --user-name "$USER_NAME" --output text \
-      --query "[join('', ['PUBLIC_EVIDENCE_ACCESS_KEY_ID=', AccessKey.AccessKeyId]), join('', ['PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=', AccessKey.SecretAccessKey])]" \
+      --query "[join('', ['EVIDENCE_S3_ACCESS_KEY_ID=', AccessKey.AccessKeyId]), join('', ['EVIDENCE_S3_SECRET_ACCESS_KEY=', AccessKey.SecretAccessKey])]" \
       | tr '\t' '\n' >>"$KEY_OUT"; then
     if [[ ! -s $KEY_OUT ]]; then
       rm -f "$KEY_OUT"

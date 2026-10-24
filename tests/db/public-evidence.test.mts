@@ -5,8 +5,8 @@
 //     credential rejection, removal, the team quota, the submission lock, the kill switch and missing config
 // An anonymous bucket policy on public/* stands in for CloudFront here. Real CloudFront and real S3 are not exercised.
 //
-//   QA_DATABASE_URL=postgres://…throwaway… QA_PUBLIC_EVIDENCE_ENDPOINT=http://127.0.0.1:9102 \
-//   QA_PUBLIC_EVIDENCE_ACCESS_KEY_ID=… QA_PUBLIC_EVIDENCE_SECRET_ACCESS_KEY=… npm run test:db
+//   QA_DATABASE_URL=postgres://…throwaway… QA_EVIDENCE_S3_ENDPOINT=http://127.0.0.1:9102 \
+//   QA_EVIDENCE_S3_ACCESS_KEY_ID=… QA_EVIDENCE_S3_SECRET_ACCESS_KEY=… npm run test:db
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -14,14 +14,14 @@ import { CreateBucketCommand, DeleteBucketCommand, DeleteObjectsCommand, HeadObj
 
 const QA = process.env.QA_DATABASE_URL;
 const LIVE = process.env.DATABASE_URL;
-const S3_URL = process.env.QA_PUBLIC_EVIDENCE_ENDPOINT;
+const S3_URL = process.env.QA_EVIDENCE_S3_ENDPOINT;
 const local = !!S3_URL && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(S3_URL);
 const skip = !QA
   ? "QA_DATABASE_URL not set"
   : QA === LIVE
     ? "QA_DATABASE_URL equals DATABASE_URL: refusing to touch the live database"
     : !local
-      ? "QA_PUBLIC_EVIDENCE_ENDPOINT must be a local S3 server (http://127.0.0.1:port)"
+      ? "QA_EVIDENCE_S3_ENDPOINT must be a local S3 server (http://127.0.0.1:port)"
       : false;
 
 type Caller = import("../../src/server/kane.ts").KaneCaller;
@@ -46,14 +46,14 @@ before(async () => {
   process.env.DATABASE_URL = QA;
   process.env.SESSION_SECRET ||= "qa-session-secret-not-for-production";
   Object.assign(process.env, {
-    PUBLIC_EVIDENCE_ENDPOINT: S3_URL,
-    PUBLIC_EVIDENCE_REGION: "us-east-1",
-    PUBLIC_EVIDENCE_BUCKET: bucket,
-    PUBLIC_EVIDENCE_BASE_URL: `${S3_URL!.replace(/\/$/, "")}/${bucket}`,
-    PUBLIC_EVIDENCE_ACCESS_KEY_ID: process.env.QA_PUBLIC_EVIDENCE_ACCESS_KEY_ID,
-    PUBLIC_EVIDENCE_SECRET_ACCESS_KEY: process.env.QA_PUBLIC_EVIDENCE_SECRET_ACCESS_KEY,
+    EVIDENCE_S3_ENDPOINT: S3_URL,
+    EVIDENCE_S3_REGION: "us-east-1",
+    EVIDENCE_S3_BUCKET: bucket,
+    EVIDENCE_CDN_BASE_URL: `${S3_URL!.replace(/\/$/, "")}/${bucket}`,
+    EVIDENCE_S3_ACCESS_KEY_ID: process.env.QA_EVIDENCE_S3_ACCESS_KEY_ID,
+    EVIDENCE_S3_SECRET_ACCESS_KEY: process.env.QA_EVIDENCE_S3_SECRET_ACCESS_KEY,
   });
-  delete process.env.PUBLIC_EVIDENCE_DISTRIBUTION_ID;
+  delete process.env.EVIDENCE_CDN_DISTRIBUTION_ID;
   const [db, flags, pe, up] = await Promise.all([
     import("../../src/lib/db.ts"),
     import("../../src/lib/flags.ts"),
@@ -65,7 +65,7 @@ before(async () => {
     region: "us-east-1",
     endpoint: S3_URL,
     forcePathStyle: true,
-    credentials: { accessKeyId: process.env.PUBLIC_EVIDENCE_ACCESS_KEY_ID!, secretAccessKey: process.env.PUBLIC_EVIDENCE_SECRET_ACCESS_KEY! },
+    credentials: { accessKeyId: process.env.EVIDENCE_S3_ACCESS_KEY_ID!, secretAccessKey: process.env.EVIDENCE_S3_SECRET_ACCESS_KEY! },
   });
   await admin.send(new CreateBucketCommand({ Bucket: bucket }));
   const policy = { Version: "2012-10-17", Statement: [{ Effect: "Allow", Principal: { AWS: ["*"] }, Action: ["s3:GetObject"], Resource: [`arn:aws:s3:::${bucket}/public/*`] }] };
@@ -149,12 +149,12 @@ test("request, PUT and complete publish the file at base + key with our headers"
   assert.ok(new Date(r.expires_at).getTime() - Date.now() <= 600_000 + 5_000);
 
   // Uploaded but not yet checked: the incoming object is not public.
-  const incoming = `${process.env.PUBLIC_EVIDENCE_BASE_URL}/incoming/p${ids.projects[0]}/${sha(body)}.png`;
+  const incoming = `${process.env.EVIDENCE_CDN_BASE_URL}/incoming/p${ids.projects[0]}/${sha(body)}.png`;
   assert.notEqual((await fetch(incoming)).status, 200);
 
   const done = await m.up.completePublicEvidenceUpload(callers[0], r.object_id);
   assert.equal(done.status, "public");
-  assert.equal(done.public_url, `${process.env.PUBLIC_EVIDENCE_BASE_URL}/public/p${ids.projects[0]}/${sha(body)}.png`);
+  assert.equal(done.public_url, `${process.env.EVIDENCE_CDN_BASE_URL}/public/p${ids.projects[0]}/${sha(body)}.png`);
   assert.equal(done.run_id, ids.run);
   assert.equal(done.commit_sha, "b".repeat(40));
   const res = await fetch(done.public_url);
@@ -252,7 +252,7 @@ test("a credential in NDJSON rejects those bytes for good and nothing is publish
   assert.match(o.reject_reason ?? "", /credential/);
   assert.equal(o.public_url, null);
   await assert.rejects(admin.send(new HeadObjectCommand({ Bucket: bucket, Key: `incoming/p${ids.projects[0]}/${sha(body)}.ndjson` })));
-  assert.notEqual((await fetch(`${process.env.PUBLIC_EVIDENCE_BASE_URL}/public/p${ids.projects[0]}/${sha(body)}.ndjson`)).status, 200);
+  assert.notEqual((await fetch(`${process.env.EVIDENCE_CDN_BASE_URL}/public/p${ids.projects[0]}/${sha(body)}.ndjson`)).status, 200);
   await assert.rejects(m.up.requestPublicEvidenceUpload(callers[1], ask(body, { kind: "ndjson", filename: "run.ndjson", content_type: "application/x-ndjson" })), code("VALIDATION_FAILED"));
 });
 
@@ -311,11 +311,11 @@ test("the kill switch and missing config refuse uploads cleanly", { skip }, asyn
   } finally {
     await m.flags.setFlag("public_evidence", true);
   }
-  const saved = process.env.PUBLIC_EVIDENCE_BUCKET;
-  delete process.env.PUBLIC_EVIDENCE_BUCKET;
+  const saved = process.env.EVIDENCE_S3_BUCKET;
+  delete process.env.EVIDENCE_S3_BUCKET;
   try {
-    await assert.rejects(m.up.requestPublicEvidenceUpload(callers[3], ask(png("config"))), (e: { code?: string; details?: { missing?: string[] } }) => e.code === "DOWNSTREAM_DEGRADED" && !!e.details?.missing?.includes("PUBLIC_EVIDENCE_BUCKET"));
+    await assert.rejects(m.up.requestPublicEvidenceUpload(callers[3], ask(png("config"))), (e: { code?: string; details?: { missing?: string[] } }) => e.code === "DOWNSTREAM_DEGRADED" && !!e.details?.missing?.includes("EVIDENCE_S3_BUCKET"));
   } finally {
-    process.env.PUBLIC_EVIDENCE_BUCKET = saved;
+    process.env.EVIDENCE_S3_BUCKET = saved;
   }
 });

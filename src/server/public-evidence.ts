@@ -3,7 +3,7 @@ import { query } from "@/lib/db";
 
 // Public evidence: files a team approved for the public S3 bucket
 // (docs/api/PUBLIC_EVIDENCE.md). Only rows with status 'public' have a live
-// object, served at PUBLIC_EVIDENCE_BASE_URL/{object_key}.
+// object, served at EVIDENCE_CDN_BASE_URL/{object_key}.
 
 export const PUBLIC_EVIDENCE_KINDS = ["screenshot", "video", "ndjson", "report", "testmd", "log"] as const;
 export type PublicEvidenceKind = (typeof PUBLIC_EVIDENCE_KINDS)[number];
@@ -54,7 +54,7 @@ export function parsePublicEvidenceId(ref: string): number | null {
 }
 
 export function publicEvidenceUrl(objectKey: string) {
-  const base = process.env.PUBLIC_EVIDENCE_BASE_URL?.trim().replace(/\/+$/, "");
-  if (!base) throw new Error("PUBLIC_EVIDENCE_BASE_URL is not set");
+  const base = process.env.EVIDENCE_CDN_BASE_URL?.trim().replace(/\/+$/, "");
+  if (!base) throw new Error("EVIDENCE_CDN_BASE_URL is not set");
   return `${base}/${objectKey.split("/").map(encodeURIComponent).join("/")}`;
 }
