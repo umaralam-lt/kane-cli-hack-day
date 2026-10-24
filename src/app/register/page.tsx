@@ -77,7 +77,7 @@ async function Steps({ searchParams }: Pick<PageProps<"/register">, "searchParam
 
   const state = await flowState(member.id);
   const stage: FlowStage = edit === "profile" ? "profile" : edit === "photo" ? "photo" : state.stage;
-  const testmu = <TestmuPanel failed={sp.testmu === "failed"} />;
+  const testmu = <TestmuPanel failed={sp.testmu === "failed"} memberId={member.id} email={member.email} />;
   if (stage !== "profile" && stage !== "photo" && stage !== "choice") {
     // Hold here while the TestMu AI key is on screen or activation needs a retry.
     if (!(await needsTestmuStep(sp.testmu === "failed"))) redirect(state.next);

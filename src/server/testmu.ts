@@ -17,10 +17,12 @@ import {
   type TestmuSession,
   type TestmuState,
 } from "@/lib/testmu-gate";
-import { provisionTestmuAccount } from "@/lib/testmu-provision";
+import { INVITE_DONE_CODES, RATE_LIMITED, inviteTestmuMember, provisionTestmuAccount, type InviteRequest, type ProvisionResult } from "@/lib/testmu-provision";
 import { checkAccessKey, emailFrom } from "@/lib/testmu-verify";
 import { AppError, emailHash, siteUrl, writeAudit } from "./core";
 import type { MemberRow } from "./auth";
+import { rateLimit } from "./ratelimit";
+import type { ActingMember } from "./teams";
 
 // TestMu AI access keys (docs/api/TESTMU_ACCESS.md). Two ways in:
 //   activation (the main path): after the profile is saved we send it to
@@ -41,6 +43,25 @@ import type { MemberRow } from "./auth";
 //   TESTMU_VERIFY_STUB  stub answer outside production: "valid" (default) | "invalid"
 
 const VERIFY_TIMEOUT_MS = 8000;
+const PASSWORD_MIN = 8;
+const PASSWORD_MAX = 255;
+/** Longest Retry-After the team sync waits out before it stops. */
+const SYNC_MAX_WAIT_SEC = 20;
+/** Invite answers about one teammate: the sync carries on with the next. Anything else stops it. */
+const SYNC_CONTINUE_CODES = [...INVITE_DONE_CODES, "INELIGIBLE", "NOT_HACK_DAY_ORG", "MEMBER_IN_ANOTHER_TEAM", "ALREADY_INVITED", "INVALID_REQUEST"];
+const TEAM_SYNC_MESSAGES: Record<string, (name: string) => string> = {
+  MEMBER_ADDED: () => "In your TestMu AI team.",
+  MEMBER_INVITED: () => "Invited. Joins your TestMu AI team when they activate TestMu AI on /register.",
+  ALREADY_IN_TEAM: () => "Already in your TestMu AI team.",
+  NOT_TEAM_LEAD: () => "Your TestMu AI account isn’t the admin of its own Hack Day account, so it can’t add teammates. Ask at the help desk.",
+  MEMBER_IN_ANOTHER_TEAM: (n) => `${n} already belongs to another TestMu AI team. Ask at the help desk.`,
+  ALREADY_INVITED: (n) => `${n} was already invited to another TestMu AI team. Ask at the help desk.`,
+  NOT_HACK_DAY_ORG: (n) => `${n} has a TestMu AI account but hasn’t joined Hack Day yet. They need to finish TestMu AI activation on /register, then retry.`,
+  TEAM_FULL: () => "Your TestMu AI team already has 4 people, including pending invites. Ask at the help desk.",
+  INVALID_CREDENTIALS: () => "TestMu AI didn’t accept that password. Enter your TestMu AI password and retry.",
+  INELIGIBLE: (n) => `${n}’s TestMu AI account isn’t eligible to join a team. Ask at the help desk.`,
+  RATE_LIMITED: () => "TestMu AI asked us to slow down. Retry in a minute.",
+};
 
 export type VerifiedKey = { username: string; email: string | null };
 
@@ -123,12 +144,9 @@ const callbackUrl = () => siteUrl("/api/v1/auth/testmu/callback");
 /** Step 1: remember where to return, then send the person to TestMu AI. */
 export async function startConnect(next: string | null): Promise<string> {
   const target = personalNext(next ?? undefined);
-  // Signed in as yourself: activate on TestMu AI from your profile and carry on.
+  // Signed in as yourself: activation needs your TestMu AI password, which /register asks for.
   const session = await getMemberSession();
-  if (session?.personal) {
-    await activateTestmu(session.memberId);
-    return target;
-  }
+  if (session?.personal) return "/register?testmu=failed";
   const auth = process.env.TESTMU_AUTH_URL?.trim();
   // No TestMu login page configured: the profile at /register is where the key comes from.
   if (!auth) return `/register?next=${encodeURIComponent(target)}`;
@@ -198,33 +216,51 @@ export const TESTMU_REVEAL_COOKIE = "hd_testmu_reveal";
 export type ActivatedKey = { username: string; access_key: string; member_id: number };
 
 /**
- * Send this member's profile to TestMu AI; TestMu answers with the account's
- * username + access key. We keep only the key's fingerprint (testmu_links),
- * set hd_testmu, and hand the key back once: to an API caller in the
- * response, to a browser through a 10-minute reveal cookie (/register shows it
- * once for Kane CLI / Codex). Safe to repeat: TestMu finds the same account.
+ * Send this member's profile and TestMu AI password to TestMu AI's claim API.
+ * TestMu answers with the account's username + access key. We keep only the
+ * key's fingerprint (testmu_links), set hd_testmu, and hand the key back once:
+ * to an API caller in the response, to a browser through a 10-minute reveal
+ * cookie (/register shows it once for Kane CLI / Codex). The password is only
+ * passed on to TestMu, never stored. Safe to repeat: TestMu signs the same account in.
  */
-export async function activateTestmu(memberId: number, opts: { reveal?: boolean; setCookie?: boolean } = {}): Promise<ActivatedKey> {
+export async function activateTestmu(memberId: number, opts: { password: string; reveal?: boolean; setCookie?: boolean }): Promise<ActivatedKey> {
   const [m] = await query<{ name: string; email: string; linkedin: string | null; x_handle: string | null; github_handle: string | null }>(
     "select coalesce(display_name, name) as name, email, linkedin, x_handle, github_handle from members where id = $1 and deleted_at is null",
     [memberId],
   );
   if (!m) throw new AppError("NOT_FOUND", { userMessage: "We couldn't find your profile. Fill it in again at /register." });
-  const r = await provisionTestmuAccount({ name: m.name, email: m.email.toLowerCase(), linkedin: m.linkedin, x: m.x_handle, github: m.github_handle, external_id: `member:${memberId}` });
+  if (opts.password.length < PASSWORD_MIN || opts.password.length > PASSWORD_MAX) {
+    throw new AppError("VALIDATION_FAILED", {
+      userMessage: "Enter your TestMu AI password (8+ characters).",
+      details: { reason: "password_required", issues: [{ path: "testmu_password", message: "Enter your TestMu AI password (8+ characters)." }] },
+    });
+  }
+  const r = await provisionTestmuAccount({
+    name: m.name,
+    email: m.email.toLowerCase(),
+    password: opts.password,
+    linkedin: m.linkedin,
+    x: m.x_handle,
+    github: m.github_handle,
+    external_id: `member:${memberId}`,
+    page_url: siteUrl("/register"),
+  });
   if (!r.ok) {
     await query(
       `insert into testmu_provision_failures (member_id, reason, detail) values ($1, $2, $3)
        on conflict (member_id) do update set reason = $2, detail = $3, tries = testmu_provision_failures.tries + 1, last_at = now()`,
       [memberId, r.reason, `${r.detail}${r.message ? ` · ${r.message}` : ""}`.slice(0, 500)],
     );
-    throw r.reason === "rejected"
-      ? new AppError("TESTMU_KEY_REQUIRED", { userMessage: r.message ? `TestMu AI couldn't activate your account: ${r.message}` : "TestMu AI couldn't activate your account. Check your details, or ask at the help desk." })
-      : new AppError("TESTMU_UNAVAILABLE", { message: `provision: ${r.detail}` });
+    throw activationError(r, m.email.toLowerCase());
   }
   const creds = { username: r.username, accessKey: r.accessKey };
   await recordLink(creds, { username: r.username, email: r.email ?? m.email.toLowerCase() }, "provision", memberId);
+  await query("update testmu_links set organization_id = $2, claim_code = $3 where lower(testmu_username) = lower($1)", [r.username, r.organizationId, r.code]);
   await query("delete from testmu_provision_failures where member_id = $1", [memberId]);
-  await writeAudit({ type: "member", id: memberId }, { action: "testmu.activate", resourceType: "member", resourceId: String(memberId), after: { username: r.username } });
+  await writeAudit(
+    { type: "member", id: memberId },
+    { action: "testmu.activate", resourceType: "member", resourceId: String(memberId), after: { username: r.username, code: r.code, organization_id: r.organizationId } },
+  );
   if (opts.setCookie !== false) await setTestmuCookie({ u: r.username, e: m.email.toLowerCase(), m: memberId });
   if (opts.reveal) {
     (await cookies()).set(TESTMU_REVEAL_COOKIE, signValue({ u: r.username, k: r.accessKey, exp: Date.now() + 10 * 60_000 }), cookieOpts(10 * 60, "/register"));
@@ -261,3 +297,109 @@ export async function memberFromPrincipal(load: (id: number) => Promise<MemberRo
   const id = p.m ?? (await memberIdForTestmu(p));
   return id ? load(id) : null;
 }
+
+/** The last activation failure for this member (reason and TestMu's message), or null. Never the password. */
+export async function activationFailure(memberId: number): Promise<{ reason: string; message: string | null } | null> {
+  const [f] = await query<{ reason: string; detail: string | null }>("select reason, detail from testmu_provision_failures where member_id = $1", [memberId]);
+  return f ? { reason: f.reason, message: f.detail?.split(" · ").slice(1).join(" · ") || null } : null;
+}
+
+// ── TestMu AI team sync (once the captain confirms the final team) ───────────
+
+/** Each current teammate's TestMu AI team status (the last invite answer), captain excluded. */
+export async function teamSyncStatus(teamId: number): Promise<TeamSyncStatus[]> {
+  const rows = await query<Omit<TeamSyncStatus, "done">>(
+    `select m.id as member_id, coalesce(m.display_name, m.name) as name, s.code, s.message, s.attempted_at
+       from team_memberships tm
+       join teams t on t.id = tm.team_id
+       join members m on m.id = tm.member_id
+       left join testmu_team_sync s on s.team_id = tm.team_id and s.member_id = m.id
+      where tm.team_id = $1 and tm.left_at is null and m.deleted_at is null and m.id is distinct from t.captain_id
+      order by tm.joined_at`,
+    [teamId],
+  );
+  return rows.map((r) => ({ ...r, done: !!r.code && INVITE_DONE_CODES.includes(r.code) }));
+}
+
+/** Captain only, after our lock: invite each teammate not done yet into the captain's TestMu AI team, one call at a time. */
+export async function syncTestmuTeam(who: ActingMember, teamId: number, password: string): Promise<TeamSyncResult> {
+  // Lazy: ./teams imports ./auth, which imports this file.
+  const { getTeamInfo } = await import("./teams");
+  const team = await getTeamInfo({ id: teamId });
+  if (!team) throw new AppError("NOT_FOUND", { userMessage: "Team not found." });
+  if (team.captain_id !== who.member.id) throw new AppError("FORBIDDEN", { userMessage: "Only the team captain can do that." });
+  if (!team.locked) throw new AppError("CONFLICT", { userMessage: "Confirm the final team first." });
+  const pending = (await teamSyncStatus(teamId)).filter((s) => !s.done);
+  if (!pending.length) return { attempted: 0, stopped: null };
+  if (password.length < PASSWORD_MIN || password.length > PASSWORD_MAX) {
+    throw new AppError("VALIDATION_FAILED", {
+      userMessage: "Enter your TestMu AI password (8+ characters) to add your teammates to your TestMu AI team.",
+      details: { issues: [{ path: "testmu_password", message: "Enter your TestMu AI password (8+ characters)." }] },
+    });
+  }
+  const rl = await rateLimit(`testmu-sync:${teamId}`, { limit: 6, windowSec: 300 });
+  if (!rl.ok) throw new AppError("RATE_LIMITED", { userMessage: "Too many tries. Wait a few minutes, or ask at the help desk." });
+  const [lead] = await query<{ email: string }>("select email from members where id = $1", [who.member.id]);
+  const emails = new Map(
+    (await query<{ id: number; email: string }>("select id, email from members where id = any($1::bigint[])", [pending.map((p) => p.member_id)])).map((r) => [r.id, r.email]),
+  );
+  const results: { member_id: number; code: string }[] = [];
+  let stopped: string | null = null;
+  for (const p of pending) {
+    const r = await inviteHonouringRetry({ email: lead.email, password, member_email: emails.get(p.member_id) ?? "" });
+    await query(
+      `insert into testmu_team_sync (team_id, member_id, code, message, organization_id, attempted_at) values ($1, $2, $3, $4, $5, now())
+       on conflict (team_id, member_id) do update set code = $3, message = $4, organization_id = coalesce($5, testmu_team_sync.organization_id), attempted_at = now()`,
+      [teamId, p.member_id, r.code, r.message, r.organizationId],
+    );
+    results.push({ member_id: p.member_id, code: r.code });
+    if (!SYNC_CONTINUE_CODES.includes(r.code)) {
+      stopped = r.code;
+      break;
+    }
+  }
+  await writeAudit(who.actor, { action: "testmu.team_sync", resourceType: "team", resourceId: teamId, payload: { results, stopped } });
+  return { attempted: results.length, stopped };
+}
+
+/** What to tell people about one teammate's sync status. */
+export function teamSyncMessage(code: string | null, name: string): string {
+  if (!code) return "Not added to your TestMu AI team yet.";
+  return TEAM_SYNC_MESSAGES[code]?.(name) ?? "We couldn’t reach TestMu AI. Retry in a minute.";
+}
+
+/** A refused activation as the AppError people see. `details.reason` tells the form what to ask for. */
+function activationError(r: Extract<ProvisionResult, { ok: false }>, email: string) {
+  const details = { reason: r.reason, testmu_code: r.code };
+  if (r.reason === "wrong_password") {
+    return new AppError("TESTMU_KEY_REQUIRED", {
+      userMessage: `${email} already has a TestMu AI account with a different password. Enter your TestMu AI password for ${email}. Your password here stays the same.`,
+      details,
+    });
+  }
+  if (r.reason === "rejected") {
+    const issues = r.fieldErrors ? Object.entries(r.fieldErrors).map(([path, message]) => ({ path, message })) : undefined;
+    return new AppError("TESTMU_KEY_REQUIRED", {
+      userMessage: r.message ? `TestMu AI couldn't activate your account: ${r.message}` : "TestMu AI couldn't activate your account. Check your details, or ask at the help desk.",
+      details: { ...details, ...(issues ? { issues } : {}) },
+    });
+  }
+  return new AppError("TESTMU_UNAVAILABLE", {
+    message: `provision: ${r.detail}`,
+    userMessage: `We couldn't activate your TestMu AI account right now. Try again${r.retryAfter ? ` in about ${r.retryAfter}s` : " in a minute"}.`,
+    details: { ...details, ...(r.retryAfter ? { retry_after_sec: r.retryAfter } : {}) },
+  });
+}
+
+/** One invite call. A 429 with a short Retry-After is waited out and tried once more. */
+async function inviteHonouringRetry(req: InviteRequest) {
+  const first = await inviteTestmuMember(req);
+  const wait = first.code === RATE_LIMITED ? first.retryAfter : null;
+  if (!wait || wait > SYNC_MAX_WAIT_SEC) return first;
+  await new Promise((r) => setTimeout(r, wait * 1000));
+  return inviteTestmuMember(req);
+}
+
+export type TeamSyncStatus = { member_id: number; name: string; code: string | null; message: string | null; attempted_at: Date | null; done: boolean };
+
+export type TeamSyncResult = { attempted: number; stopped: string | null };

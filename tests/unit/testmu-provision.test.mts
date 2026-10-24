@@ -7,6 +7,7 @@ import { activationEnabled, credentialsFromBody, provisionTestmuAccount } from "
 test("username + access key are read from the common answer shapes", () => {
   assert.deepEqual(credentialsFromBody({ username: "alex", access_key: "k1", email: "A@x.io" }), { username: "alex", accessKey: "k1", email: "a@x.io" });
   assert.deepEqual(credentialsFromBody({ data: { user_name: "alex", accessKey: "k2" } }), { username: "alex", accessKey: "k2", email: null });
+  assert.deepEqual(credentialsFromBody({ code: "SIGNEDUP", username: "alex", access_token: "k3", organization_id: 7 }), { username: "alex", accessKey: "k3", email: null });
   assert.equal(credentialsFromBody({ username: "alex" }), null);
   assert.equal(credentialsFromBody({ username: "", access_key: "k" }), null);
   assert.equal(credentialsFromBody(null), null);
@@ -30,7 +31,7 @@ test("activation is off in production until TestMu's endpoint is configured", ()
 
 test("without an endpoint, production refuses and previews get a stub key", async () => {
   const saved = { ...process.env };
-  const profile = { name: "Alex", email: "alex@x.io", linkedin: null, x: null, github: null, external_id: "member:7" };
+  const profile = { name: "Alex", email: "alex@x.io", password: "correct-horse-1", linkedin: null, x: null, github: null, external_id: "member:7", page_url: "https://kaneclihack.sh/register" };
   try {
     delete process.env.TESTMU_PROVISION_URL;
     process.env.VERCEL_ENV = "production";

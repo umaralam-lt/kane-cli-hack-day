@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 import { query } from "@/lib/db";
 import { maskCode, parseCodexCodes } from "@/lib/codex-codes";
 import { mapClaimResponse, type ClaimOutcome } from "@/lib/testmu-claim";
+import { CLAIM_OK_CODES } from "@/lib/testmu-provision";
 import { PLAN_MESSAGES, type ActivationStepId } from "@/data/activation-steps";
 import { memberActor, staffActor, type MemberRow, type Staff } from "./auth";
 import { AppError, maskEmail, transaction, withAudit, writeAudit, type Actor } from "./core";
@@ -153,6 +154,8 @@ export async function claimPlan(member: MemberRow): Promise<ClaimView> {
   await requireTeam(member);
   const [row] = await query<{ status: string }>("select status from testmu_plan_claims where member_id = $1", [member.id]);
   if (row?.status === "claimed") return { outcome: "claimed", message: PLAN_MESSAGES.claimed };
+  // The claim API needs the TestMu AI password, so activation on /register makes the claim.
+  if (await claimedAtActivation(member)) return { outcome: "claimed", message: PLAN_MESSAGES.claimed };
   const rl = await rateLimit(`testmu-claim:${member.id}`, { limit: 6, windowSec: 600 });
   if (!rl.ok) throw new AppError("RATE_LIMITED", { userMessage: "Too many tries. Wait a few minutes, or ask at the help desk." });
 
@@ -404,4 +407,24 @@ export async function exportCodexCodes(staff: Staff) {
   );
   await writeAudit(staffActor(staff), { action: "codex_code.export", resourceType: "codex_credit_code", resourceId: "export", payload: { rows: rows.length } });
   return rows;
+}
+
+/** Activation on /register already claimed the plan for this member: record step 2 without another call. */
+async function claimedAtActivation(member: MemberRow) {
+  const [link] = await query<{ claim_code: string }>(
+    "select claim_code from testmu_links where member_id = $1 and revoked_at is null and claim_code = any($2::text[]) order by last_seen_at desc limit 1",
+    [member.id, CLAIM_OK_CODES],
+  );
+  if (!link) return false;
+  await transaction(async (tx) => {
+    await tx.query(
+      `insert into testmu_plan_claims (member_id, status, claimed_at, last_attempt_at) values ($1, 'claimed', now(), now())
+       on conflict (member_id) do update set status = 'claimed', claimed_at = coalesce(testmu_plan_claims.claimed_at, now()), last_error = null, updated_at = now()`,
+      [member.id],
+    );
+    await tx.query("insert into activation_ticks (member_id, step) values ($1, 'testmu_plan') on conflict do nothing", [member.id]);
+    await syncActivated(tx, member.id);
+    await writeAudit(memberActor(member), { action: "activation.plan_claim.claimed", resourceType: "testmu_plan_claim", resourceId: member.id, payload: { target: "activation", testmu_code: link.claim_code } }, tx);
+  });
+  return true;
 }

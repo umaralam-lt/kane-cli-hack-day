@@ -6,7 +6,7 @@ import { useActionState, useRef, useState, type FormEvent, type ReactNode } from
 import { FormError, Label, SubmitButton, inputCls } from "@/components/forms/fields";
 import HumanCameraCheckpoint from "@/components/camera/HumanCameraCheckpoint";
 import { checkProfileFields } from "@/lib/profile-fields";
-import { choiceAction, profileAction, skipPhotoAction, type ChoiceState, type ProfileState } from "./actions";
+import { choiceAction, profileAction, retryTestmuAction, skipPhotoAction, type ChoiceState, type ProfileState, type TestmuRetryState } from "./actions";
 import { apiFetch } from "@/lib/api-client";
 
 // The three /register steps. The server decides which one shows.
@@ -299,5 +299,25 @@ function Choice({ value, title, body }: { value: string; title: string; body: st
         <span className="mt-1 block font-plex text-xs leading-relaxed text-lightgray">{body}</span>
       </span>
     </label>
+  );
+}
+
+/** Retry TestMu AI activation with the TestMu AI password. Sent once to TestMu AI, never stored. */
+export function TestmuRetryForm({ email, wrongPassword }: { email: string; wrongPassword: boolean }) {
+  const [state, action] = useActionState<TestmuRetryState, FormData>(retryTestmuAction, null);
+  const wrong = state?.wrongPassword ?? wrongPassword;
+  return (
+    <form action={action} className="mt-4 max-w-md space-y-3" data-testmu-retry={wrong ? "wrong_password" : "retry"}>
+      <div>
+        <Label htmlFor="r-testmu-pw" hint="Never stored">
+          {wrong ? `TestMu AI password for ${email}` : "Your TestMu AI password"}
+        </Label>
+        <input id="r-testmu-pw" name="testmu_password" type="password" required minLength={8} maxLength={255} autoComplete="current-password" className={inputCls} />
+      </div>
+      <FormError message={state?.error} />
+      <SubmitButton pending="Activating…" className="min-h-11">
+        Activate TestMu AI →
+      </SubmitButton>
+    </form>
   );
 }
